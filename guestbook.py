@@ -49,9 +49,24 @@ class Picture(db.Model):
     search_document_id = db.StringProperty()
     blob_key = db.StringProperty()
     blob_size = db.StringProperty()
+    username = db.StringProperty()
+    passcode = db.StringProperty()
 #     location = db.GeoPtProperty()
 
+class Counter(db.Model):
+    total_entries = db.IntegerProperty()
+    pics_from_gallery = db.IntegerProperty()
+    pics_from_camera = db.IntegerProperty()
+    img_size_small = db.IntegerProperty()
+    img_size_med = db.IntegerProperty()
+    img_size_orig = db.IntegerProperty()
 
+class CounterEnty(db.Model):
+    user_name = db.StringProperty()
+    password = db.StringProperty()
+    picsource = db.StringProperty()
+    pic_size = db.StringProperty()
+    
 
 class MainHandler(webapp2.RequestHandler):
     def get(self):
@@ -66,8 +81,9 @@ class UploadHandler(blobstore_handlers.BlobstoreUploadHandler):
         upload_files = self.get_uploads('uploaded_file')  # 'file' is file upload field in the form
         blob_info = upload_files[0]
         var_tuple = self.request.POST
-        if 'passcode' and 'latitude' and 'longitude' in var_tuple:
+        if 'passcode' and 'latitude' and 'longitude' and 'username' in var_tuple:
             passcode = var_tuple['passcode']
+            username = var_tuple['username']
             latitude = var_tuple['latitude']
             longitude = var_tuple['longitude']
             doc_id = insertitem(latitude, longitude, passcode)
@@ -75,7 +91,19 @@ class UploadHandler(blobstore_handlers.BlobstoreUploadHandler):
             p.search_document_id = doc_id
             p.blob_key = str(blob_info.key())
             p.blob_size = str(blob_info.size)
+            p.username = username
+            p.passcode = passcode
             p.save()
+            if 'imagesize' and 'picsource' in var_tuple:
+                imagesize = var_tuple['imagesize']
+                picsource = var_tuple['picsource']
+                lCounterEntry = CounterEnty()
+                lCounterEntry.user_name = username
+                lCounterEntry.password = passcode
+                lCounterEntry.picsource = picsource
+                lCounterEntry.pic_size = imagesize
+                lCounterEntry.save()
+            
             # Add the task to the default queue. to delete the picture after 10 mins.    // 3 mins for testing
             taskqueue.add(url='/worker', countdown= 28800 ,params={'search_document_id': doc_id})
             self.response.out.write("File Uploaded Successfully blobkey:[%s]" % blob_info.key())
@@ -121,8 +149,41 @@ class DeletionWorker(webapp2.RequestHandler):
                     picture.delete()
                 index = search.Index(name="myIndex")
                 index.delete([search_document_id])
-            
                 #TODO: DELETE Search key and document as well from search index
+
+# class CollectStatsWorker(webapp2.RequestHandler):
+#     def post(self): # should run at most 1/s
+#         counter = Counter.all()
+#         if counter.count() > 0:
+#             counter = counter.get()
+#         else:
+#             counter = Counter()
+#             counter.total_entries = 0
+#             counter.pics_from_gallery = 0
+#             counter.pics_from_camera = 0
+#             counter.img_size_small = 0
+#             counter.img_size_med = 0
+#             counter.img_size_orig = 0
+#         counter.save()
+        
+#         allCounterEntries = CounterEnty.all()
+#         if(allCounterEntries.count() > 0):
+#             counter.total_entries = counter.total_entries + allCounterEntries.count()
+#             camerapics = allCounterEntries.filter('picsource =', 'camera')
+#             counter.pics_from_camera += len(camerapics)
+#             gallerypics = allCounterEntries.filter('picsource =', 'gallery')        
+#             counter.pics_from_gallery += len(gallerypics)
+#             smallpics = allCounterEntries.filter('pic_size =', '25')        
+#             counter.img_size_small += len(smallpics)
+#             medpics = allCounterEntries.filter('pic_size =', '50')        
+#             counter.img_size_med += len(medpics)
+#             origpics = allCounterEntries.filter('pic_size =', '100')        
+#             counter.img_size_orig += len(origpics)
+#             
+#             for entry in allCounterEntries:
+#                 entry.delete()
+#                 
+#             counter.save()
          
 class Download(webapp2.RequestHandler):
     def get(self):
@@ -186,6 +247,13 @@ class Clearall(webapp2.RequestHandler):
                 break
             # Delete the documents for the given ids from the Index.
             doc_index.delete(document_ids)
+            
+        allpics = Picture.all()
+        for p in allpics:
+            p.delete()
+        allcounter = CounterEnty.all()
+        for c in allcounter:
+            c.delete()
             
 class Thumnail(webapp2.RequestHandler):
     def get(self):
