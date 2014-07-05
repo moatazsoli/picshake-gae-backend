@@ -10,8 +10,11 @@ from google.appengine.ext.webapp import blobstore_handlers
 from google.appengine.api import images
 import webapp2
 import json
+import random
+from google.appengine.api import memcache
 
-def insertitem(latitude, longitude, passcode):
+
+def insertitem(latitude, longitude, passcode, index):
     my_document = search.Document(
     # Setting the doc_id is optional. If omitted, the search service will create an identifier.
     fields=[
@@ -19,7 +22,7 @@ def insertitem(latitude, longitude, passcode):
        search.GeoField(name='location', value=search.GeoPoint(float(latitude), float(longitude)))
        ])
     try:
-        index = search.Index(name="myIndex")
+        index = search.Index(name=index)
         results = index.put(my_document)
         return results[0].id
     except search.Error:
@@ -28,8 +31,8 @@ def insertitem(latitude, longitude, passcode):
     
         #else return success
 
-def searchitem(latitude, longitude, passcode):
-    index = search.Index(name="myIndex")
+def searchitem(latitude, longitude, passcode, index):
+    index = search.Index(name=index)
     if index:
         query_string = "passcode='%s' AND distance(location, geopoint(%s, %s)) < 500" % (passcode,latitude, longitude)
         result = index.search(query_string)
@@ -43,7 +46,20 @@ def searchitem(latitude, longitude, passcode):
                 return 0;
         else:
             return 0;
-#         my_document = search.Document(fields=fields)
+
+def getpublicpass(latitude, longitude):
+    index = search.Index(name="public")
+    if index:
+        query_string = "distance(location, geopoint(%s, %s)) < 500" % (latitude, longitude)
+        result = index.search(query_string)
+        if result:
+            if(result.number_found > 0):
+                list_of_documents = result.results
+                return list_of_documents
+            else:
+                return 0;
+        else:
+            return 0;
 
 class Picture(db.Model):
     search_document_id = db.StringProperty()
@@ -66,27 +82,36 @@ class CounterEnty(db.Model):
     password = db.StringProperty()
     picsource = db.StringProperty()
     pic_size = db.StringProperty()
-    
+
 
 class MainHandler(webapp2.RequestHandler):
     def get(self):
         upload_url = blobstore.create_upload_url('/upload')
         self.response.out.write('<html><body><p>Welcome To My Site</p></body></html>')
         self.response.out.write('<form action="%s" method="POST" enctype="multipart/form-data">' % upload_url)
-        self.response.out.write("""Upload File: <input type="file" name="uploaded_file"><br> <input type="text" name="passcode"><input type="text" name="latitude"><input type="text" name="longitude"><input type="submit"
-        name="submit" value="Submit"> </form></body></html>""")
+        self.response.out.write("""Upload File: <input type="file" name="uploaded_file"><br>
+        Passcode : <input type="text" name="passcode"> <br> 
+        lat : <input type="text" name="latitude"> lon: <input type="text" name="longitude"> <br> 
+        username <input type="text" name="username"><br> 
+        picsouce(gallery or camera) <input type="text" name="picsource"><br>
+        imagesize 25 or 50 or 100 <input type="text" name="imagesize"><br>
+        <input type="submit" name="submit" value="Submit"> </form></body></html>""")
 
 class UploadHandler(blobstore_handlers.BlobstoreUploadHandler):
     def post(self):
         upload_files = self.get_uploads('uploaded_file')  # 'file' is file upload field in the form
         blob_info = upload_files[0]
         var_tuple = self.request.POST
-        if 'passcode' and 'latitude' and 'longitude' and 'username' in var_tuple:
+        if 'passcode' and 'latitude' and 'longitude' and 'username' and 'imagesize' and 'picsource' in var_tuple:
             passcode = var_tuple['passcode']
             username = var_tuple['username']
             latitude = var_tuple['latitude']
             longitude = var_tuple['longitude']
-            doc_id = insertitem(latitude, longitude, passcode)
+            passcodeStr = str(passcode)
+            if passcodeStr.startswith("#",0,len(passcodeStr)):
+                doc_id = insertitem(latitude, longitude, passcode,"public")
+            else:
+                doc_id = insertitem(latitude, longitude, passcode,"private")
             p = Picture()
             p.search_document_id = doc_id
             p.blob_key = str(blob_info.key())
@@ -94,18 +119,19 @@ class UploadHandler(blobstore_handlers.BlobstoreUploadHandler):
             p.username = username
             p.passcode = passcode
             p.save()
-            if 'imagesize' and 'picsource' in var_tuple:
-                imagesize = var_tuple['imagesize']
-                picsource = var_tuple['picsource']
-                lCounterEntry = CounterEnty()
-                lCounterEntry.user_name = username
-                lCounterEntry.password = passcode
-                lCounterEntry.picsource = picsource
-                lCounterEntry.pic_size = imagesize
-                lCounterEntry.save()
+            imagesize = var_tuple['imagesize']
+            picsource = var_tuple['picsource']
+            increment(picsource)
+            increment(imagesize)
+#                 lCounterEntry = CounterEnty()
+#                 lCounterEntry.user_name = username
+#                 lCounterEntry.password = passcode
+#                 lCounterEntry.picsource = picsource
+#                 lCounterEntry.pic_size = imagesize
+#                 lCounterEntry.save()
             
             # Add the task to the default queue. to delete the picture after 10 mins.    // 3 mins for testing
-            taskqueue.add(url='/worker', countdown= 28800 ,params={'search_document_id': doc_id})
+            taskqueue.add(url='/worker', countdown= 86400 ,params={'search_document_id': doc_id})
             self.response.out.write("File Uploaded Successfully blobkey:[%s]" % blob_info.key())
             self.response.out.write("savedkey: [%s]" % str(blob_info.key()))
             self.response.out.write("passcode: [%s]" % str(passcode))
@@ -120,6 +146,14 @@ class UploadHandler(blobstore_handlers.BlobstoreUploadHandler):
 #         self.response.out.write("contents[%s]" % str(ss))    
 #         self.redirect('/serve/%s' % blob_info.key())
 
+class GetStats(webapp2.RequestHandler):
+    def get(self):
+        self.response.out.write( "image size small %s , med %s , original %s --- camera pics %s , gallery pics %s" %(str(get_count("25")),
+                                                                                                   str(get_count("50")),
+                                                                                                   str(get_count("100")),
+                                                                                                   str(get_count("gallery")),
+                                                                                                   str(get_count("camera"))) )
+        
 class ServeHandler(blobstore_handlers.BlobstoreDownloadHandler):
     def get(self, resource):
         resource = str(urllib.unquote(resource))
@@ -147,8 +181,13 @@ class DeletionWorker(webapp2.RequestHandler):
                     images.delete_serving_url(picture.blob_key)
                     blobstore.delete([picture.blob_key])
                     picture.delete()
-                index = search.Index(name="myIndex")
-                index.delete([search_document_id])
+                    passcodeStr = str(picture.passcode)
+                    if passcodeStr.startswith("#",0,len(passcodeStr)):
+                        index = search.Index(name="public")
+                        index.delete([search_document_id])
+                    else:
+                        index = search.Index(name="private")
+                        index.delete([search_document_id])
                 #TODO: DELETE Search key and document as well from search index
 
 # class CollectStatsWorker(webapp2.RequestHandler):
@@ -192,7 +231,13 @@ class Download(webapp2.RequestHandler):
             passcode = var_tuple['passcode']
             latitude = var_tuple['latitude']
             longitude = var_tuple['longitude']
-            result = searchitem(latitude, longitude, passcode)
+            passcodeStr = str(passcode)
+            
+            if passcodeStr.startswith("#",0,len(passcodeStr)):
+                result = searchitem(latitude, longitude, passcode, "public")
+            else:
+                result = searchitem(latitude, longitude, passcode, "private")
+                
             if result == 0: #ERROR
                 self.response.out.write('5002')
             else:
@@ -237,7 +282,18 @@ class Download(webapp2.RequestHandler):
 class Clearall(webapp2.RequestHandler):
     def get(self):
         """Delete all the docs in the given index."""
-        doc_index = search.Index(name="myIndex")
+        doc_index = search.Index(name="private")
+        # looping because get_range by default returns up to 100 documents at a time
+        while True:
+            # Get a list of documents populating only the doc_id field and extract the ids.
+            document_ids = [document.doc_id
+                            for document in doc_index.get_range(ids_only=True)]
+            if not document_ids:
+                break
+            # Delete the documents for the given ids from the Index.
+            doc_index.delete(document_ids)
+            
+        doc_index = search.Index(name="public")
         # looping because get_range by default returns up to 100 documents at a time
         while True:
             # Get a list of documents populating only the doc_id field and extract the ids.
@@ -262,7 +318,11 @@ class Thumnail(webapp2.RequestHandler):
             passcode = var_tuple['passcode']
             latitude = var_tuple['latitude']
             longitude = var_tuple['longitude']
-            result = searchitem(latitude, longitude, passcode)
+            passcodeStr = str(passcode)
+            if passcodeStr.startswith("#",0,len(passcodeStr)):
+                result = searchitem(latitude, longitude, passcode, "public")
+            else:
+                result = searchitem(latitude, longitude, passcode, "private")
             if result == 0: #ERROR
                 self.response.out.write('5002')
             else:
@@ -296,13 +356,174 @@ class Thumnail(webapp2.RequestHandler):
         else:
             self.response.out.write("5003") # ERROR in variables sent
                         
-                        
+class PublicPassHandler(webapp2.RequestHandler):
+    def get(self):
+        var_tuple = self.request.GET
+        if 'latitude' and 'longitude' in var_tuple:
+            latitude = var_tuple['latitude']
+            longitude = var_tuple['longitude']
+            result = getpublicpass(latitude, longitude)
+            
+            if result == 0: #ERROR
+                self.response.out.write('7002') #no public passcodes available
+            else:
+                #Result has a list of documents
+                response = {}
+                
+                passcode_list = []
+                added_passcodes=[]
+                counter = 0
+                # LATER ON , TODO , we have to limit the amount of pics indicies returned for performance, limit to 10 pics
+                for item in result:
+                    temp_item={}
+                    item_fields = item.fields
+                    for field in item_fields:
+                        if field.name == "passcode":
+                            pass_value = field.value
+                            
+                            q = db.GqlQuery("SELECT * FROM Picture " +
+                                            "WHERE passcode = :1 ",
+                                            pass_value)
+                            if q:
+                                q_count = q.count()
+                                if q_count >0:
+                                    temp_item['passcode'] = pass_value
+                                    temp_item['count'] = q_count
+                                    if temp_item not in passcode_list: 
+                                        passcode_list.append(temp_item)
+                                        counter += 1
+                insertion_sort(passcode_list)
+                final_list=[]
+                for i in  reversed(passcode_list):
+                    final_list.append(i)
+                response['counter'] = counter
+                response['list'] = final_list
+                
+                
+                self.response.out.write(json.dumps(response))
+        else:
+            self.response.out.write("7003") # ERROR in variables sent                        
                         
 class Intro(webapp2.RequestHandler):
     def get(self):
         #flag + msg
         ret = "0App is Under Maintenance, Please be patient"
         self.response.out.write(ret) # ERROR in variables sent
+
+
+
+
+def insertion_sort(list2):
+    for i in range(1, len(list2)):
+        save = list2[i]
+        j = i
+        while j > 0 and list2[j - 1]['count'] > save['count']:
+            list2[j] = list2[j - 1]
+            j -= 1
+        list2[j] = save
+
+############################################################
+############################################################
+###Sharding Counters
+############################################################
+############################################################
+SHARD_KEY_TEMPLATE = 'shard-{}-{:d}'
+
+
+class GeneralCounterShardConfig(ndb.Model):
+    """Tracks the number of shards for each named counter."""
+    num_shards = ndb.IntegerProperty(default=20)
+
+    @classmethod
+    def all_keys(cls, name):
+        """Returns all possible keys for the counter name given the config.
+
+        Args:
+            name: The name of the counter.
+
+        Returns:
+            The full list of ndb.Key values corresponding to all the possible
+                counter shards that could exist.
+        """
+        config = cls.get_or_insert(name)
+        shard_key_strings = [SHARD_KEY_TEMPLATE.format(name, index)
+                             for index in range(config.num_shards)]
+        return [ndb.Key(GeneralCounterShard, shard_key_string)
+                for shard_key_string in shard_key_strings]
+
+
+class GeneralCounterShard(ndb.Model):
+    """Shards for each named counter."""
+    count = ndb.IntegerProperty(default=0)
+
+
+def get_count(name):
+    """Retrieve the value for a given sharded counter.
+
+    Args:
+        name: The name of the counter.
+
+    Returns:
+        Integer; the cumulative count of all sharded counters for the given
+            counter name.
+    """
+    total = memcache.get(name)
+    if total is None:
+        total = 0
+        all_keys = GeneralCounterShardConfig.all_keys(name)
+        for counter in ndb.get_multi(all_keys):
+            if counter is not None:
+                total += counter.count
+        memcache.add(name, total, 60)
+    return total
+
+
+def increment(name):
+    """Increment the value for a given sharded counter.
+
+    Args:
+        name: The name of the counter.
+    """
+    config = GeneralCounterShardConfig.get_or_insert(name)
+    _increment(name, config.num_shards)
+
+
+@ndb.transactional
+def _increment(name, num_shards):
+    """Transactional helper to increment the value for a given sharded counter.
+
+    Also takes a number of shards to determine which shard will be used.
+
+    Args:
+        name: The name of the counter.
+        num_shards: How many shards to use.
+    """
+    index = random.randint(0, num_shards - 1)
+    shard_key_string = SHARD_KEY_TEMPLATE.format(name, index)
+    counter = GeneralCounterShard.get_by_id(shard_key_string)
+    if counter is None:
+        counter = GeneralCounterShard(id=shard_key_string)
+    counter.count += 1
+    counter.put()
+    # Memcache increment does nothing if the name is not a key in memcache
+    memcache.incr(name)
+
+
+@ndb.transactional
+def increase_shards(name, num_shards):
+    """Increase the number of shards for a given sharded counter.
+
+    Will never decrease the number of shards.
+
+    Args:
+        name: The name of the counter.
+        num_shards: How many shards to use.
+    """
+    config = GeneralCounterShardConfig.get_or_insert(name)
+    if config.num_shards < num_shards:
+        config.num_shards = num_shards
+        config.put()
+
 
 
 ############################################################
@@ -669,6 +890,8 @@ app = webapp2.WSGIApplication([('/', MainHandler),
                                ('/getthum', Thumnail),
                                ('/cleanup', Clearall),
                                ('/getintromsg', Intro),
+                               ('/getpubpasscodes', PublicPassHandler),
+                               ('/getstats', GetStats),
                                ('/terms', Terms),
                                ('/privacy', Privacy),
                                ('/serve/([^/]+)?', ServeHandler)],
