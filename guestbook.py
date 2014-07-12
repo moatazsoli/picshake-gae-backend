@@ -34,18 +34,31 @@ def insertitem(latitude, longitude, passcode, index):
 def searchitem(latitude, longitude, passcode, index):
     index = search.Index(name=index)
     if index:
-        query_string = "passcode='%s' AND distance(location, geopoint(%s, %s)) < 500" % (passcode,latitude, longitude)
-        result = index.search(query_string)
-        if result:
-            if(result.number_found > 0):
-                list_of_documents = result.results
-                return list_of_documents
-#                 lMyDocument = list_of_documents[0]
-#                 return lMyDocument.doc_id
-            else:
-                return 0;
+        if index == "public":
+            queryString = "passcode='%s' AND distance(location, geopoint(%s, %s)) < 500" % (passcode,latitude, longitude)
         else:
-            return 0;
+            queryString = "passcode='%s'" % (passcode)
+        all_documents=[]
+        cursor=search.Cursor() 
+        while True:
+            results = index.search(search.Query(
+                                                query_string=queryString,
+                                                options=search.QueryOptions(
+                                                                            limit=20,
+                                                                            cursor=cursor)))
+            if results:
+                if(results.number_found > 0):
+                    list_of_documents = results.results
+                    all_documents.extend(list_of_documents)
+                    cursor=results.cursor
+                    if cursor is None:
+                        break;
+                else:
+                    return 0
+            else:
+                return 0
+        return all_documents
+            
 
 def getpublicpass(latitude, longitude):
     index = search.Index(name="public")
