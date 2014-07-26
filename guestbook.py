@@ -35,7 +35,7 @@ def searchitem(latitude, longitude, passcode, index):
     index = search.Index(name=index)
     if index:
         if index == "public":
-            queryString = "passcode='%s' AND distance(location, geopoint(%s, %s)) < 500" % (passcode,latitude, longitude)
+            queryString = "passcode='%s' AND distance(location, geopoint(%s, %s)) < 1000" % (passcode,latitude, longitude)
         else:
             queryString = "passcode='%s'" % (passcode)
         all_documents=[]
@@ -63,7 +63,7 @@ def searchitem(latitude, longitude, passcode, index):
 def getpublicpass(latitude, longitude):
     index = search.Index(name="public")
     if index:
-        query_string = "distance(location, geopoint(%s, %s)) < 500" % (latitude, longitude)
+        query_string = "distance(location, geopoint(%s, %s)) < 1000" % (latitude, longitude)
         result = index.search(query_string)
         if result:
             if(result.number_found > 0):
@@ -123,8 +123,10 @@ class UploadHandler(blobstore_handlers.BlobstoreUploadHandler):
             passcodeStr = str(passcode)
             if passcodeStr.startswith("#",0,len(passcodeStr)):
                 doc_id = insertitem(latitude, longitude, passcode,"public")
+                taskqueue.add(url='/worker', countdown= 259200 ,params={'search_document_id': doc_id})
             else:
                 doc_id = insertitem(latitude, longitude, passcode,"private")
+                taskqueue.add(url='/worker', countdown= 86400 ,params={'search_document_id': doc_id})
             p = Picture()
             p.search_document_id = doc_id
             p.blob_key = str(blob_info.key())
@@ -143,8 +145,6 @@ class UploadHandler(blobstore_handlers.BlobstoreUploadHandler):
 #                 lCounterEntry.pic_size = imagesize
 #                 lCounterEntry.save()
             
-            # Add the task to the default queue. to delete the picture after 10 mins.    // 3 mins for testing
-            taskqueue.add(url='/worker', countdown= 86400 ,params={'search_document_id': doc_id})
             self.response.out.write("File Uploaded Successfully blobkey:[%s]" % blob_info.key())
             self.response.out.write("savedkey: [%s]" % str(blob_info.key()))
             self.response.out.write("passcode: [%s]" % str(passcode))
